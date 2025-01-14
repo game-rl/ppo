@@ -1,4 +1,5 @@
 import os
+import warnings
 
 import gymnasium as gym
 import jax
@@ -10,6 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from ppo import PPOTrainer
+
+gym.logger.min_level = gym.logger.ERROR
 
 # This file shows how to train a PPO Agent on several gym environments.
 # The agent uses separate policy and value networks and Adam optimizer.
@@ -80,12 +83,12 @@ def CartPole():
     rng = jax.random.PRNGKey(seed=0)
 
     # Define the EnvironmentStepFn.
-    num_envs = 8
+    n_envs = 8
     steps_limit = 500
     env = gym.wrappers.vector.RecordEpisodeStatistics(
         gym.vector.SyncVectorEnv([
             lambda: gym.make("CartPole-v1", max_episode_steps=steps_limit)
-            for _ in range(num_envs)
+            for _ in range(n_envs)
         ]),
     )
     env_fn = EnvironmentStepFn(env)
@@ -117,26 +120,21 @@ def CartPole():
     # Define the PPO Trainer.
     ppo_trainer = PPOTrainer(
         agent_fn, optim_fn, env_fn,
-        ent_coef=0., vf_clip=float("inf"), discount=0.98, lamb=0.8, n_epochs=20, batch_size=256, tgt_KL=0.02,
+        ent_coef=0., vf_clip=float("inf"), discount=0.98, lamb=0.8,
+        batch_size=256, tgt_KL=0.02,
     )
 
     log_dir = os.path.join("logs", "CartPole-v1")
     os.makedirs(log_dir, exist_ok=True)
 
     # Run the trainer and plot the results.
-    # The total number of time steps is ``num_itres x time_steps x num_envs``.
-    #                              2.5e5 =  1000    x    32      x   8
-    # Instead of running once, we will run the trainer k times consecutively, and
-    # we will record a demo after every training session.
-    num_iters, time_steps = 1000, 32
-    k = 4
+    # The total number of time steps is ``n_iters x n_steps x n_envs``.
+    #                              2.5e5 =  1000  x    32   x   8
+    n_iters, n_steps, n_updates = 1001, 32, 20
     rng, rng_ = jax.random.split(rng, num=2)
-    record_demo(rng_, log_dir, "run_0", agent_fn, params, "CartPole-v1") # record the initial agent
-    for i in range(k):
-        rng, rng2, rng3 = jax.random.split(rng, num=3)
-        params, opt_state = ppo_trainer(rng2, params, opt_state, num_iters // k, time_steps)
-        record_demo(rng3, log_dir, f"run_{i+1}", agent_fn, params, "CartPole-v1")
-    generate_plots(log_dir, ppo_trainer.train_log, num_iters*time_steps*num_envs)
+    params, _ = ppo_trainer(rng_, params, opt_state, n_iters, n_steps, n_updates)
+    record_demo(rng, log_dir, "CartPole-v1", agent_fn, params)
+    generate_plots(log_dir, ppo_trainer.train_log)
     env.close()
 
 # LunarLander trains a PPO Agent on the LunarLander-v3 gym environment.
@@ -145,7 +143,7 @@ def LunarLander():
     rng = jax.random.PRNGKey(seed=0)
 
     # Define the EnvironmentStepFn.
-    num_envs = 16
+    n_envs = 16
     steps_limit = 500
     env = gym.wrappers.vector.RecordEpisodeStatistics(
         gym.vector.SyncVectorEnv([
@@ -157,7 +155,7 @@ def LunarLander():
                 turbulence_power=np.clip(np.random.normal(1.5, 0.5), 0.01, 1.99),
                 max_episode_steps=steps_limit,
             )
-            for _ in range(num_envs)
+            for _ in range(n_envs)
         ]),
     )
     env_fn = EnvironmentStepFn(env)
@@ -193,36 +191,30 @@ def LunarLander():
     # Define the PPO Trainer.
     ppo_trainer = PPOTrainer(
         agent_fn, optim_fn, env_fn,
-        ent_coef=0.01, discount=0.999, lamb=0.98, n_epochs=4, batch_size=64, tgt_KL=None,
+        ent_coef=0.01, discount=0.999, lamb=0.98, batch_size=64, tgt_KL=None,
     )
 
     log_dir = os.path.join("logs", "LunarLander-v3")
     os.makedirs(log_dir, exist_ok=True)
 
     # Run the trainer and plot the results.
-    # The total number of time steps is ``num_itres x time_steps x num_envs``.
-    #                              2.5e6 =   300    x    512     x   16
-    # Instead of running once, we will run the trainer k times consecutively, and
-    # we will record a demo after every training session.
-    num_iters, time_steps = 300, 512
-    k = 4
+    # The total number of time steps is ``n_iters x n_steps x n_envs``.
+    #                              2.5e6 =   300  x   512   x   16
+    n_iters, n_steps, n_updates = 301, 512, 512
     rng, rng_ = jax.random.split(rng, num=2)
-    record_demo(rng_, log_dir, "run_0", agent_fn, params, "LunarLander-v3") # record the initial agent
-    for i in range(k):
-        rng, rng2, rng3 = jax.random.split(rng, num=3)
-        params, opt_state = ppo_trainer(rng2, params, opt_state, num_iters // k, time_steps)
-        record_demo(rng3, log_dir, f"run_{i+1}", agent_fn, params, "LunarLander-v3")
-    generate_plots(log_dir, ppo_trainer.train_log, num_iters*time_steps*num_envs)
+    params, _ = ppo_trainer(rng_, params, opt_state, n_iters, n_steps, n_updates)
+    record_demo(rng, log_dir, "LunarLander-v3", agent_fn, params)
+    generate_plots(log_dir, ppo_trainer.train_log)
     env.close()
 
-def record_demo(rng, log_dir, video_name, agent_fn, params, env_name):
+
+def record_demo(rng, log_dir, env_name, agent_fn, params):
     env = gym.wrappers.RecordVideo(
         gym.wrappers.Autoreset(
             gym.make(env_name, render_mode="rgb_array"),
         ),
         video_folder=log_dir,
         video_length=1000, # around 20 sec, depends on fps (usually 50fps)
-        name_prefix=video_name,
     )
     seed = jax.random.randint(rng, (), 0, jnp.iinfo(jnp.int32).max).item()
     o, _ = env.reset(seed=seed)
@@ -234,41 +226,60 @@ def record_demo(rng, log_dir, video_name, agent_fn, params, env_name):
         o, r, t, tr, info = env.step(acts)
     env.close()
 
-def generate_plots(log_dir, train_log, total_steps):
+
+def generate_plots(log_dir, train_log):
     plt.style.use("ggplot")
 
-    keys = (
-        "Policy Loss", "Value Loss", "Total Loss", "Entropy Bonus",
-        "KL Divergence", "Total Grad Norm",
-    )
-    for k in keys:
-        if not isinstance(train_log[k][0], float):
-            continue
-        fig, ax = plt.subplots()
-        ax.plot(train_log[k], label=k)
-        ax.legend()
-        ax.set_xlabel("Gradient updates")
-        ax.set_ylabel(k)
-        fig.savefig(os.path.join(log_dir, k.replace(" ", "_")+".png"))
+    n_iters = train_log["hyperparams"][0]["n_iters"]
+    n_steps = train_log["hyperparams"][0]["n_steps"]
+    n_envs = train_log["hyperparams"][0]["n_envs"]
+    total_steps = n_iters * n_steps * n_envs
 
-    keys = ("Episode Returns", "Episode Lengths")
-    for k in keys:
-        if not isinstance(train_log[k][0], tuple) or len(train_log[k][0]) != 3:
-            continue
-        num_records = len(train_log[k])
-        avg, std, run = zip(*train_log[k])
-        avg, std, run = np.array(avg), np.array(std), np.array(run)
-        # xs = np.cumsum(list([0]+train_log["Num Updates"])[:-1])
-        xs = np.linspace(0, total_steps, num_records)
-        xs_ = xs[~(avg != avg)]     # Remove NaNs, if any.
-        avg = avg[~(avg != avg)]
-        std = std[~(std != std)]
+    xs_s = np.linspace(0, total_steps, n_iters)
+    xs_u = np.cumsum(list([0]+train_log["n_updates"])[:-1])
+    assert xs_s.shape[0] == xs_u.shape[0]
+
+    for k in train_log.keys():
+        if k == "hyperparams": continue # skip this
+        if k == "n_updates": continue # skip this
+
         fig, ax = plt.subplots()
-        ax.plot(xs_, avg, label="Average")
-        ax.fill_between(xs_, avg-0.5*std, avg+0.5*std, color="k", alpha=0.25)
-        ax.plot(xs, run, label="Running")
+
+        # When plotting episode lengths and returns use number of
+        # steps on the x-axis. Otherwise use number of updates.
+        xs = xs_s if k in {"ep_r", "ep_l"} else xs_u
+        x_label = "Total time-steps" if k in {"ep_r", "ep_l"} else "Gradient updates"
+
+        # Unpack the avg and the std from the train log.
+        avg, std = zip(*train_log[k])
+        avg, std = np.array(avg), np.array(std)
+
+        # Remove NaNs, if any.
+        xs_ = xs[~(avg != avg)]
+        avg_ = avg[~(avg != avg)]
+        std_ = std[~(std != std)]
+
+        # Plot the avg and the std.
+        ax.plot(xs_, avg_, label="Average")
+        ax.fill_between(xs_, avg_-0.5*std_, avg_+0.5*std_, color="k", alpha=0.25)
+
+        # Plot a smother curve averaged over `avg_every` entries.
+        avg_every = 20
+        xs2 = xs[::avg_every]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            # xs has `ceil(n_items / avg_every)` elems. We need to pad the ys.
+            ys = np.nanmean(np.pad(
+                avg,
+                (0, -len(avg)%avg_every),
+                constant_values=np.nan,
+            ).reshape(-1, avg_every), axis=1)
+        xs2 = xs2[~(ys != ys)]          # Remove NaNs, if any.
+        ys = ys[~(ys != ys)]
+        ax.plot(xs2, ys, label="Running", linewidth=3)
+
         ax.legend()
-        ax.set_xlabel("Number of time-steps")
+        ax.set_xlabel(x_label)
         ax.set_ylabel(k)
         ax.ticklabel_format(style="sci", axis="x", scilimits=(0,0))
         fig.savefig(os.path.join(log_dir, k.replace(" ", "_")+".png"))
