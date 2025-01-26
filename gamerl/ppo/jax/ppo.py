@@ -148,6 +148,10 @@ class PPOTrainer:
 			(obs, acts, rewards, done, logp, values), info = \
 				environment_loop(rng_, self.env_fn, self.agent_fn, params, n_steps)
 
+			# Stop gradients for the values and the logprobs.
+			values = jax.lax.stop_gradient(values)
+			logp = jax.lax.stop_gradient(logp)
+
 			# Bookkeeping. Store episode stats averaged over the time-steps.
 			with warnings.catch_warnings():
 				# We might finish the rollout without completing episodes.
@@ -161,9 +165,10 @@ class PPOTrainer:
 
 			# Reshape the arrays and create a batch loader. Note that we
 			# are reshaping only after the advantages have been computed.
+			# The values for time-step T+1 are thrown away.
 			dataset = (
 				obs.reshape(-1, *obs.shape[2:]), acts.ravel(), adv.ravel(),
-				logp.ravel(), values.ravel(),
+				logp.ravel(), values[:-1].ravel(),
 			)
 			rng, rng_ = jax.random.split(rng, num=2)
 			loader = data_loader(rng_, dataset, self.batch_size, n_updates)
@@ -271,13 +276,7 @@ def ppo_clip_loss(
 			loss, the mean policy entropy and the mean KL-divergence.
 	"""
 
-	obs = jnp.asarray(obs)
-	adv = jnp.asarray(adv)
-	logp_old = jnp.asarray(logp_old)
-	v_old = jnp.asarray(v_old)
-
-	# Compute the TD(λ)-returns.
-	v_old = jax.lax.stop_gradient(v_old) # old values with no gradient
+	# Compute the λ-returns.
 	returns = adv + v_old
 
 	# Normalize the advantages at the mini-batch level. This
@@ -286,7 +285,6 @@ def ppo_clip_loss(
 	adv = (adv - adv.mean()) / (adv.std() + eps)
 
 	# Compute the clipped policy loss.
-	logp_old = jax.lax.stop_gradient(logp_old)         # old log probs with no gradient
 	_, logp, v_pred = agent_fn(rng, params, obs, acts) # new log probs
 	rho = jnp.exp(logp - logp_old)
 	clip_adv = jnp.clip(rho, 1-pi_clip, 1+pi_clip) * adv
@@ -327,7 +325,7 @@ def gae(
 
 	Args:
 		values: ArrayLike
-			Array of shape (T,) or (T, B) with the computed values.
+			Array of shape (T+1,) or (T+1, B) with the computed values.
 		rewards: ArrayLike
 			Array of shape (T,) or (T, B) with the obtained rewards.
 		done: ArrayLike
@@ -344,18 +342,10 @@ def gae(
 			advantage estimations for each time step.
 	"""
 
-	values = jnp.asarray(values)
-	rewards = jnp.asarray(rewards)
-	done = jnp.asarray(done, dtype=bool)
-
-	# Stop gradients for the values, since here they will be used
-	# for constructing the targets.
-	values = jax.lax.stop_gradient(values)
-
 	T = values.shape[0] # number of time-steps
 
 	# For unfinished episodes we will bootstrap the last reward:
-	#   ``r_T = r_T + V(s_T), if s_T not terminal``
+	#   ``r_T = r_T + V(s_{T+1}), if s_T not terminal``
 	adv = jnp.where(done[-1], rewards[-1] - values[-1], rewards[-1]) # A = r - V
 	result = [None] * T
 	result[-1] = adv
@@ -401,6 +391,8 @@ def environment_loop(
 			Tuple (obs, acts, rewards, done, logprobs, vals) of
 			nd-arrays of shape (T, B, *) or (T, B), where B is the
 			number of sub-environments.
+			Note: Values array has shape (T+1, B), returning evaluations
+			for the states observed after the final action.
 		dict[str, Sequence[float]]
 			Info dict.
 	"""
@@ -410,8 +402,9 @@ def environment_loop(
 	ep_r, ep_l = [], []
 
 	# Allocate containers for the observations during rollout.
-	obs, actions, rewards, done, logprobs, values = \
-		[None] * T, [None] * T, [None] * T, [None] * T, [None] * T, [None] * T
+	obs, actions, rewards, done, logprobs = \
+		[None] * T, [None] * T, [None] * T, [None] * T, [None] * T
+	values = [None] * (T+1)
 
 	for i in range(T):
 		obs[i] = o
@@ -434,6 +427,9 @@ def environment_loop(
 		# Bookkeeping. On every step store episode lengths and returns.
 		ep_r.extend((infos["episode"]["r"][k] for k in range(B) if (t|tr)[k]))
 		ep_l.extend((infos["episode"]["l"][k] for k in range(B) if (t|tr)[k]))
+
+	_, _ , vals = agent_fn(rng, params, o)
+	values[-1] = vals # T+1 values.
 
 	# Stack the experiences into arrays of shape (T, B, *), where
 	# T is the number of steps and B is the number of sub-envs.
