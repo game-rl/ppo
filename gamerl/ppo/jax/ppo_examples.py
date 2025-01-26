@@ -70,7 +70,7 @@ class OptimizerFn:
 		leaves, _ = jax.tree.flatten(grads)
 		total_norm = jnp.sqrt(sum(jnp.vdot(x, x) for x in leaves))
 		clip_coef = max_norm / (total_norm + 1e-6)
-		clip_coef = jnp.maximum(clip_coef, 1.0)
+		clip_coef = jnp.minimum(clip_coef, 1.0)
 		grads = jax.tree.map(lambda g: clip_coef * g, grads) # clip grads
 		opt_state = self.opt_update(self.step, grads, opt_state)
 		params = self.get_params(opt_state)
@@ -216,6 +216,7 @@ def record_demo(rng, log_dir, env_name, agent_fn, params):
 		video_folder=log_dir,
 		video_length=1000, # around 20 sec, depends on fps (usually 50fps)
 	)
+	rng, rng_ = jax.random.split(rng, num=2)
 	seed = jax.random.randint(rng, (), 0, jnp.iinfo(jnp.int32).max).item()
 	o, _ = env.reset(seed=seed)
 	while env.recording:
